@@ -1049,14 +1049,22 @@
 
         // Initialize Firebase listeners for real-time sync
         function initializeFirebaseListeners() {
-            // Initialize stocks in Firebase if they don't exist
+            // Initialize stocks in Firebase if they don't exist, but ALWAYS use Firebase data if it exists
             Object.keys(stockData).forEach(async (symbol) => {
                 const stockRef = ref(database, `stocks/${symbol}`);
                 const snapshot = await get(stockRef);
                 
                 if (!snapshot.exists()) {
-                    // Initialize with base data
+                    // Only initialize if completely new
                     await set(stockRef, stockData[symbol]);
+                } else {
+                    // ALWAYS use Firebase data - never reset to local defaults
+                    const firebaseData = snapshot.val();
+                    stockData[symbol] = { ...stockData[symbol], ...firebaseData };
+                    updateStockDisplay(symbol);
+                    if (symbol === currentStock) {
+                        updateCurrentStockInfo();
+                    }
                 }
                 
                 // Listen for real-time updates
@@ -1988,61 +1996,65 @@
             });
         });
 
-        // Realistic price simulation with global sync
+        // Realistic price simulation with global sync - PERSISTENT ACROSS REFRESHES
         function simulateRealisticPriceMovement() {
-            // Only run simulation on one instance to prevent conflicts
-            const isMainInstance = localStorage.getItem('mainPriceInstance') === null;
-            if (isMainInstance) {
-                localStorage.setItem('mainPriceInstance', 'true');
-                setTimeout(() => localStorage.removeItem('mainPriceInstance'), 10000);
-            } else {
-                return; // Let Firebase handle updates from main instance
-            }
-
-            Object.keys(stockData).forEach(async (symbol) => {
-                const stock = stockData[symbol];
-                const now = Date.now();
+            // Use Firebase to coordinate which instance runs simulation
+            const simulationRef = ref(database, 'market/simulationLock');
+            const now = Date.now();
+            
+            get(simulationRef).then(async (snapshot) => {
+                const lockData = snapshot.val();
+                const shouldRunSimulation = !lockData || (now - lockData.timestamp > 8000); // 8 second timeout
                 
-                // Get latest data from Firebase first
-                const stockRef = ref(database, `stocks/${symbol}`);
-                const snapshot = await get(stockRef);
-                if (snapshot.exists()) {
-                    const firebaseData = snapshot.val();
-                    const timeSinceFirebaseUpdate = now - (firebaseData.lastUpdate || 0);
+                if (shouldRunSimulation) {
+                    // Set lock in Firebase
+                    await set(simulationRef, { timestamp: now, instance: Math.random() });
                     
-                    // Only update if enough time has passed (3 seconds)
-                    if (timeSinceFirebaseUpdate > 3000) {
-                        // Random price movement with realistic constraints
-                        const volatility = 0.0005 + Math.random() * 0.001; // 0.05-0.15% movement
-                        const direction = Math.random() > 0.5 ? 1 : -1;
-                        const change = firebaseData.currentPrice * volatility * direction;
+                    Object.keys(stockData).forEach(async (symbol) => {
+                        // ALWAYS get latest data from Firebase - never use local defaults
+                        const stockRef = ref(database, `stocks/${symbol}`);
+                        const snapshot = await get(stockRef);
                         
-                        // Apply weekly patterns (more volatile on certain days)
-                        const dayOfWeek = new Date().getDay();
-                        const hourOfDay = new Date().getHours();
-                        let weeklyMultiplier = 1;
-                        
-                        // Monday/Friday more volatile
-                        if (dayOfWeek === 1 || dayOfWeek === 5) weeklyMultiplier *= 1.3;
-                        // Market hours more volatile (9 AM - 4 PM EST)
-                        if (hourOfDay >= 9 && hourOfDay <= 16) weeklyMultiplier *= 1.2;
-                        
-                        const newPrice = Math.max(firebaseData.currentPrice + (change * weeklyMultiplier), 0.01);
-                        
-                        const updatedStock = {
-                            ...firebaseData,
-                            currentPrice: newPrice,
-                            change: newPrice - firebaseData.basePrice,
-                            changePercent: ((newPrice - firebaseData.basePrice) / firebaseData.basePrice) * 100,
-                            lastUpdate: now
-                        };
-                        
-                        // Update Firebase with new price
-                        await set(stockRef, updatedStock);
-                        
-                        // Update market timestamp to trigger global refresh
-                        await set(ref(database, 'market/lastUpdate'), now);
-                    }
+                        if (snapshot.exists()) {
+                            const firebaseData = snapshot.val();
+                            const timeSinceUpdate = now - (firebaseData.lastUpdate || 0);
+                            
+                            // Only update if enough time has passed (4 seconds)
+                            if (timeSinceUpdate > 4000) {
+                                // Random price movement with realistic constraints
+                                const volatility = 0.0008 + Math.random() * 0.0015; // 0.08-0.23% movement
+                                const direction = Math.random() > 0.5 ? 1 : -1;
+                                const change = firebaseData.currentPrice * volatility * direction;
+                                
+                                // Apply weekly patterns (more volatile on certain days)
+                                const dayOfWeek = new Date().getDay();
+                                const hourOfDay = new Date().getHours();
+                                let weeklyMultiplier = 1;
+                                
+                                // Monday/Friday more volatile
+                                if (dayOfWeek === 1 || dayOfWeek === 5) weeklyMultiplier *= 1.4;
+                                // Market hours more volatile (9 AM - 4 PM EST)
+                                if (hourOfDay >= 9 && hourOfDay <= 16) weeklyMultiplier *= 1.3;
+                                
+                                const newPrice = Math.max(firebaseData.currentPrice + (change * weeklyMultiplier), 0.01);
+                                
+                                // PRESERVE ALL FIREBASE DATA - never overwrite with local defaults
+                                const updatedStock = {
+                                    ...firebaseData, // Keep all existing Firebase data
+                                    currentPrice: newPrice,
+                                    change: newPrice - firebaseData.basePrice,
+                                    changePercent: ((newPrice - firebaseData.basePrice) / firebaseData.basePrice) * 100,
+                                    lastUpdate: now
+                                };
+                                
+                                // Update Firebase with new price
+                                await set(stockRef, updatedStock);
+                            }
+                        }
+                    });
+                    
+                    // Update market timestamp to trigger global refresh
+                    await set(ref(database, 'market/lastUpdate'), now);
                 }
             });
         }
@@ -2067,5 +2079,5 @@
         // Start the application
         initialize();
     </script>
-<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'969e6d761179c8d9',t:'MTc1NDMxNDQxOC4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'969e720a26d7470a',t:'MTc1NDMxNDYwNS4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
