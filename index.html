@@ -1,0 +1,1217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stocks - Market Data</title>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        * { box-sizing: border-box; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
+            background: #000000;
+            color: #ffffff;
+            margin: 0;
+            padding: 0;
+            overflow-x: hidden;
+        }
+        
+        .stock-card {
+            background: linear-gradient(135deg, #1c1c1e 0%, #2c2c2e 100%);
+            border-radius: 12px;
+            border: 1px solid #38383a;
+            transition: all 0.3s ease;
+        }
+        
+        .stock-card:hover {
+            border-color: #007aff;
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(0, 122, 255, 0.15);
+        }
+        
+        .chart-container {
+            background: #1c1c1e;
+            border-radius: 12px;
+            border: 1px solid #38383a;
+        }
+        
+        .news-item {
+            background: #1c1c1e;
+            border-radius: 8px;
+            border: 1px solid #38383a;
+            transition: all 0.2s ease;
+        }
+        
+        .news-item:hover {
+            background: #2c2c2e;
+            border-color: #48484a;
+        }
+        
+        .price-up { color: #30d158; }
+        .price-down { color: #ff453a; }
+        .price-neutral { color: #ff9f0a; }
+        
+        .timeframe-btn {
+            background: #2c2c2e;
+            border: 1px solid #48484a;
+            border-radius: 8px;
+            color: #ffffff;
+            transition: all 0.2s ease;
+        }
+        
+        .timeframe-btn.active {
+            background: #007aff;
+            border-color: #007aff;
+        }
+        
+        .timeframe-btn:hover:not(.active) {
+            background: #3a3a3c;
+        }
+        
+        .admin-trigger {
+            position: fixed;
+            bottom: 15px;
+            right: 15px;
+            width: 6px;
+            height: 6px;
+            background: #48484a;
+            border-radius: 50%;
+            cursor: pointer;
+            opacity: 0.2;
+            z-index: 1000;
+        }
+        
+        .candlestick-tooltip {
+            background: rgba(28, 28, 30, 0.95);
+            border: 1px solid #48484a;
+            border-radius: 8px;
+            backdrop-filter: blur(20px);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+        
+        .market-status {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 8px;
+            background: #30d158;
+            color: #000;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        
+        .market-status.closed {
+            background: #ff453a;
+            color: #fff;
+        }
+        
+        .sync-indicator {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 8px 12px;
+            background: #30d158;
+            color: #000;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            z-index: 1000;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+        
+        .sync-indicator.show {
+            opacity: 1;
+        }
+        
+        @media (max-width: 768px) {
+            .desktop-layout { display: none; }
+            .mobile-layout { display: block; }
+        }
+        
+        @media (min-width: 769px) {
+            .desktop-layout { display: block; }
+            .mobile-layout { display: none; }
+        }
+        
+        .chart-line {
+            stroke-width: 2;
+            fill: none;
+        }
+        
+        .volume-bar {
+            opacity: 0.6;
+            transition: opacity 0.2s;
+        }
+        
+        .volume-bar:hover {
+            opacity: 1;
+        }
+        
+        .scrolling-news {
+            animation: scrollNews 45s linear infinite;
+        }
+        
+        @keyframes scrollNews {
+            0% { transform: translateX(100%); }
+            100% { transform: translateX(-100%); }
+        }
+        
+        .loading-shimmer {
+            background: linear-gradient(90deg, #2c2c2e 25%, #3a3a3c 50%, #2c2c2e 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.5s infinite;
+        }
+        
+        @keyframes shimmer {
+            0% { background-position: -200% 0; }
+            100% { background-position: 200% 0; }
+        }
+    </style>
+</head>
+<body>
+    <!-- Sync Indicator -->
+    <div id="syncIndicator" class="sync-indicator">
+        🔄 Synced globally
+    </div>
+
+    <!-- Desktop Layout -->
+    <div class="desktop-layout">
+        <!-- Header -->
+        <div class="flex items-center justify-between p-6 border-b border-gray-800">
+            <div class="flex items-center space-x-6">
+                <h1 class="text-3xl font-bold">📈 Stocks</h1>
+                <div class="market-status" id="marketStatus">
+                    <span class="w-2 h-2 bg-current rounded-full mr-2"></span>
+                    Market Open
+                </div>
+            </div>
+            <div class="flex items-center space-x-4">
+                <div class="text-sm text-gray-400" id="lastUpdate">Last updated: Just now</div>
+                <div id="currentTime" class="text-lg font-mono"></div>
+            </div>
+        </div>
+
+        <div class="flex h-screen">
+            <!-- Left Sidebar - Watchlist -->
+            <div class="w-80 p-6 border-r border-gray-800 overflow-y-auto">
+                <h2 class="text-xl font-bold mb-4">My Watchlist</h2>
+                
+                <div class="space-y-3" id="watchlist">
+                    <!-- Stock cards will be populated here -->
+                </div>
+                
+                <!-- Market Summary -->
+                <div class="mt-8">
+                    <h3 class="text-lg font-semibold mb-4">Market Summary</h3>
+                    <div class="space-y-3">
+                        <div class="flex justify-between items-center p-3 bg-gray-900 rounded-lg">
+                            <span class="text-sm">S&P 500</span>
+                            <div class="text-right">
+                                <div class="font-semibold">4,185.2</div>
+                                <div class="text-xs price-down">-0.3%</div>
+                            </div>
+                        </div>
+                        <div class="flex justify-between items-center p-3 bg-gray-900 rounded-lg">
+                            <span class="text-sm">NASDAQ</span>
+                            <div class="text-right">
+                                <div class="font-semibold">12,845.6</div>
+                                <div class="text-xs price-down">-0.6%</div>
+                            </div>
+                        </div>
+                        <div class="flex justify-between items-center p-3 bg-gray-900 rounded-lg">
+                            <span class="text-sm">Dow Jones</span>
+                            <div class="text-right">
+                                <div class="font-semibold">33,274.2</div>
+                                <div class="text-xs price-up">+0.1%</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Main Content -->
+            <div class="flex-1 flex flex-col">
+                <!-- Stock Header -->
+                <div class="p-6 border-b border-gray-800">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <h2 id="stockName" class="text-2xl font-bold">Dozera Group</h2>
+                            <div class="text-gray-400" id="stockSymbol">DZRA • NYSE</div>
+                        </div>
+                        <div class="text-right">
+                            <div id="stockPrice" class="text-4xl font-bold price-up">$24.10</div>
+                            <div id="stockChange" class="text-lg price-up">+$1.90 (+4.3%) Today</div>
+                        </div>
+                    </div>
+                    
+                    <!-- Timeframe Selector -->
+                    <div class="flex space-x-2 mt-4">
+                        <button class="timeframe-btn active px-4 py-2" data-period="1D">1D</button>
+                        <button class="timeframe-btn px-4 py-2" data-period="5D">5D</button>
+                        <button class="timeframe-btn px-4 py-2" data-period="1M">1M</button>
+                        <button class="timeframe-btn px-4 py-2" data-period="3M">3M</button>
+                        <button class="timeframe-btn px-4 py-2" data-period="6M">6M</button>
+                        <button class="timeframe-btn px-4 py-2" data-period="1Y">1Y</button>
+                        <button class="timeframe-btn px-4 py-2" data-period="5Y">5Y</button>
+                    </div>
+                </div>
+
+                <!-- Chart Area -->
+                <div class="flex-1 p-6">
+                    <div class="chart-container h-full relative">
+                        <svg id="mainChart" class="w-full h-full cursor-crosshair">
+                            <!-- Chart will be rendered here -->
+                        </svg>
+                        
+                        <!-- Chart Tooltip -->
+                        <div id="chartTooltip" class="candlestick-tooltip absolute hidden p-4 text-sm z-50">
+                            <div id="tooltipDate" class="font-semibold text-white mb-2"></div>
+                            <div class="grid grid-cols-2 gap-3 text-xs">
+                                <div class="text-gray-400">Open</div>
+                                <div id="tooltipOpen" class="font-mono text-white"></div>
+                                <div class="text-gray-400">High</div>
+                                <div id="tooltipHigh" class="font-mono text-white"></div>
+                                <div class="text-gray-400">Low</div>
+                                <div id="tooltipLow" class="font-mono text-white"></div>
+                                <div class="text-gray-400">Close</div>
+                                <div id="tooltipClose" class="font-mono text-white"></div>
+                                <div class="text-gray-400">Volume</div>
+                                <div id="tooltipVolume" class="font-mono text-white"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Sidebar - News & Details -->
+            <div class="w-96 p-6 border-l border-gray-800 overflow-y-auto">
+                <!-- Stock Details -->
+                <div class="mb-6">
+                    <h3 class="text-lg font-semibold mb-4">Stock Details</h3>
+                    <div class="space-y-3" id="stockDetails">
+                        <!-- Details will be populated here -->
+                    </div>
+                </div>
+
+                <!-- News Section -->
+                <div>
+                    <h3 class="text-lg font-semibold mb-4">Latest News</h3>
+                    <div class="space-y-4" id="newsSection">
+                        <!-- News items will be populated here -->
+                    </div>
+                </div>
+
+                <!-- Analyst Ratings -->
+                <div class="mt-6">
+                    <h3 class="text-lg font-semibold mb-4">Analyst Ratings</h3>
+                    <div class="bg-gray-900 p-4 rounded-lg">
+                        <div class="flex justify-between items-center mb-2">
+                            <span class="text-sm text-gray-400">Strong Buy</span>
+                            <span class="text-sm font-semibold text-green-400">78%</span>
+                        </div>
+                        <div class="flex justify-between items-center mb-2">
+                            <span class="text-sm text-gray-400">Hold</span>
+                            <span class="text-sm font-semibold text-yellow-400">18%</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-sm text-gray-400">Sell</span>
+                            <span class="text-sm font-semibold text-red-400">4%</span>
+                        </div>
+                        <div class="mt-3 pt-3 border-t border-gray-700">
+                            <div class="text-sm text-gray-400">Price Target</div>
+                            <div class="text-lg font-bold text-green-400">$32.50</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Mobile Layout -->
+    <div class="mobile-layout">
+        <!-- Mobile Header -->
+        <div class="p-4 border-b border-gray-800">
+            <div class="flex items-center justify-between">
+                <h1 class="text-xl font-bold">📈 Stocks</h1>
+                <div class="market-status">
+                    <span class="w-2 h-2 bg-current rounded-full mr-2"></span>
+                    Open
+                </div>
+            </div>
+        </div>
+
+        <!-- Mobile Stock Cards -->
+        <div class="p-4 space-y-3" id="mobileWatchlist">
+            <!-- Mobile stock cards will be populated here -->
+        </div>
+
+        <!-- Mobile Chart -->
+        <div class="p-4">
+            <div class="chart-container h-64">
+                <svg id="mobileChart" class="w-full h-full">
+                    <!-- Mobile chart will be rendered here -->
+                </svg>
+            </div>
+        </div>
+
+        <!-- Mobile News -->
+        <div class="p-4">
+            <h3 class="text-lg font-semibold mb-4">Latest News</h3>
+            <div class="space-y-3" id="mobileNews">
+                <!-- Mobile news will be populated here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Scrolling News Ticker -->
+    <div class="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-800 overflow-hidden">
+        <div class="scrolling-news flex items-center space-x-8 py-2 text-sm whitespace-nowrap">
+            <span class="text-green-400">📈 DZRA +4.3%</span>
+            <span class="text-green-400">📈 VORZO +1.2%</span>
+            <span class="text-red-400">📉 OTECH -0.8%</span>
+            <span class="text-gray-400">🔔 Q2 earnings beat expectations</span>
+            <span class="text-blue-400">🛠️ Vorzo opens new EV factory</span>
+            <span class="text-purple-400">💻 Oriontec signs major software deal</span>
+        </div>
+    </div>
+
+    <!-- Admin Access -->
+    <div class="admin-trigger" onclick="showAdminLogin()"></div>
+
+    <!-- Admin Modal -->
+    <div id="adminModal" class="fixed inset-0 bg-black bg-opacity-75 hidden items-center justify-center z-50">
+        <div class="bg-gray-900 p-6 rounded-xl border border-gray-700 w-96">
+            <h3 class="text-xl font-bold mb-4">Admin Access</h3>
+            <input type="password" id="adminCode" placeholder="Enter access code" 
+                   class="w-full p-3 bg-gray-800 border border-gray-600 rounded-lg mb-4 text-white">
+            <div class="flex space-x-3">
+                <button onclick="verifyAdmin()" 
+                        class="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-semibold">
+                    Login
+                </button>
+                <button onclick="hideAdminLogin()" 
+                        class="flex-1 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg font-semibold">
+                    Cancel
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Admin Panel -->
+    <div id="adminPanel" class="fixed top-4 right-4 bg-gray-900 border border-gray-700 p-6 rounded-xl hidden z-50 w-80">
+        <h3 class="text-lg font-bold mb-4">🔧 Admin Control Panel</h3>
+        <div class="space-y-4">
+            <div>
+                <label class="block text-sm text-gray-400 mb-2">DZRA Price ($)</label>
+                <div class="flex space-x-2">
+                    <input type="number" id="dzraPrice" step="0.01" 
+                           class="flex-1 p-2 bg-gray-800 border border-gray-600 rounded text-white">
+                    <button onclick="updatePrice('DZRA')" 
+                            class="px-3 py-2 bg-green-600 hover:bg-green-700 rounded text-sm font-semibold">
+                        Update
+                    </button>
+                </div>
+            </div>
+            <div>
+                <label class="block text-sm text-gray-400 mb-2">VORZO Price ($)</label>
+                <div class="flex space-x-2">
+                    <input type="number" id="vorzoPrice" step="0.01" 
+                           class="flex-1 p-2 bg-gray-800 border border-gray-600 rounded text-white">
+                    <button onclick="updatePrice('VORZO')" 
+                            class="px-3 py-2 bg-green-600 hover:bg-green-700 rounded text-sm font-semibold">
+                        Update
+                    </button>
+                </div>
+            </div>
+            <div>
+                <label class="block text-sm text-gray-400 mb-2">OTECH Price ($)</label>
+                <div class="flex space-x-2">
+                    <input type="number" id="otechPrice" step="0.01" 
+                           class="flex-1 p-2 bg-gray-800 border border-gray-600 rounded text-white">
+                    <button onclick="updatePrice('OTECH')" 
+                            class="px-3 py-2 bg-green-600 hover:bg-green-700 rounded text-sm font-semibold">
+                        Update
+                    </button>
+                </div>
+            </div>
+            <div class="pt-4 border-t border-gray-700">
+                <button onclick="hideAdminPanel()" 
+                        class="w-full px-4 py-2 bg-red-600 hover:bg-red-700 rounded font-semibold">
+                    Close Panel
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Branding -->
+    <div class="fixed bottom-4 left-4 text-xs text-gray-600">
+        Powered by Oriontec Charts™
+    </div>
+
+    <script>
+        // Firebase Configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyCCWB4adPUSrSW2cSd9I3oqYIw65ZnStj4",
+            authDomain: "twitter-1903a.firebaseapp.com",
+            databaseURL: "https://twitter-1903a-default-rtdb.firebaseio.com",
+            projectId: "twitter-1903a",
+            storageBucket: "twitter-1903a.firebasestorage.app",
+            messagingSenderId: "37758914989",
+            appId: "1:37758914989:web:6c364d74288a8b08f8d124"
+        };
+
+        // Initialize Firebase
+        firebase.initializeApp(firebaseConfig);
+        const database = firebase.database();
+
+        // Global State
+        let currentStock = 'DZRA';
+        let currentTimeframe = '1D';
+        let isAdmin = false;
+        let chartData = {};
+        let lastSyncTime = Date.now();
+
+        // Stock Data - This will be synced across all devices
+        const stockData = {
+            DZRA: {
+                name: 'Dozera Group',
+                symbol: 'DZRA',
+                exchange: 'NYSE',
+                currentPrice: 24.10,
+                previousClose: 22.20,
+                change: 1.90,
+                changePercent: 4.3,
+                marketCap: '2.41B',
+                peRatio: 18.5,
+                volume: '1.2M',
+                avgVolume: '850K',
+                high52: 25.00,
+                low52: 18.20,
+                dividendYield: '2.1%',
+                eps: 1.31,
+                beta: 1.15,
+                earnings: 'Aug 15, 2024',
+                sector: 'Infrastructure',
+                employees: '12,500'
+            },
+            VORZO: {
+                name: 'Vorzo EV',
+                symbol: 'VORZO',
+                exchange: 'NASDAQ',
+                currentPrice: 22.00,
+                previousClose: 21.74,
+                change: 0.26,
+                changePercent: 1.2,
+                marketCap: '1.85B',
+                peRatio: 22.1,
+                volume: '890K',
+                avgVolume: '650K',
+                high52: 28.50,
+                low52: 16.80,
+                dividendYield: '0.0%',
+                eps: 0.99,
+                beta: 1.45,
+                earnings: 'Sep 2, 2024',
+                sector: 'Automotive',
+                employees: '8,200'
+            },
+            OTECH: {
+                name: 'Oriontec',
+                symbol: 'OTECH',
+                exchange: 'NYSE',
+                currentPrice: 19.50,
+                previousClose: 19.66,
+                change: -0.16,
+                changePercent: -0.8,
+                marketCap: '1.52B',
+                peRatio: 15.8,
+                volume: '650K',
+                avgVolume: '720K',
+                high52: 24.80,
+                low52: 17.20,
+                dividendYield: '1.8%',
+                eps: 1.23,
+                beta: 0.95,
+                earnings: 'Aug 28, 2024',
+                sector: 'Technology',
+                employees: '15,800'
+            }
+        };
+
+        // News Data
+        const newsData = [
+            {
+                id: 1,
+                title: "Dozera Group Reports Record Q2 Earnings",
+                summary: "Infrastructure giant beats analyst expectations with $340M revenue, up 12% YoY",
+                time: "2 hours ago",
+                source: "MarketWatch",
+                symbol: "DZRA",
+                sentiment: "positive"
+            },
+            {
+                id: 2,
+                title: "Vorzo Opens New EV Manufacturing Facility in Texas",
+                summary: "The $500M facility will produce 50,000 electric vehicles annually starting Q4 2024",
+                time: "4 hours ago",
+                source: "Reuters",
+                symbol: "VORZO",
+                sentiment: "positive"
+            },
+            {
+                id: 3,
+                title: "Oriontec Secures $50M Software Contract with Fortune 500 Company",
+                summary: "Multi-year deal to provide cloud infrastructure solutions boosts revenue outlook",
+                time: "6 hours ago",
+                source: "TechCrunch",
+                symbol: "OTECH",
+                sentiment: "positive"
+            },
+            {
+                id: 4,
+                title: "Market Analysis: Infrastructure Stocks Outperform Amid Economic Recovery",
+                summary: "Sector rotation continues as investors favor value plays over growth stocks",
+                time: "8 hours ago",
+                source: "Bloomberg",
+                symbol: "MARKET",
+                sentiment: "neutral"
+            },
+            {
+                id: 5,
+                title: "EV Sales Surge 45% in Q2, Benefiting Companies Like Vorzo",
+                summary: "Electric vehicle adoption accelerates as charging infrastructure expands nationwide",
+                time: "12 hours ago",
+                source: "CNBC",
+                symbol: "VORZO",
+                sentiment: "positive"
+            }
+        ];
+
+        // Initialize Application
+        function init() {
+            console.log('🚀 Initializing Stocks App...');
+            
+            updateCurrentTime();
+            generateChartData();
+            renderWatchlist();
+            renderStockDetails();
+            renderNews();
+            renderChart();
+            setupEventListeners();
+            
+            // Start real-time updates
+            startRealTimeSync();
+            
+            // Update time every second
+            setInterval(updateCurrentTime, 1000);
+            
+            console.log('✅ App initialized successfully');
+        }
+
+        // Update current time display
+        function updateCurrentTime() {
+            const now = new Date();
+            const timeString = now.toLocaleTimeString('en-US', {
+                hour12: true,
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+            
+            const timeElements = document.querySelectorAll('#currentTime');
+            timeElements.forEach(el => el.textContent = timeString);
+            
+            // Update market status
+            const hour = now.getHours();
+            const isMarketOpen = hour >= 9 && hour < 16; // 9 AM to 4 PM
+            const statusElements = document.querySelectorAll('#marketStatus');
+            statusElements.forEach(el => {
+                el.textContent = isMarketOpen ? 'Market Open' : 'Market Closed';
+                el.className = isMarketOpen ? 'market-status' : 'market-status closed';
+            });
+        }
+
+        // Generate realistic chart data
+        function generateChartData() {
+            const timeframes = ['1D', '5D', '1M', '3M', '6M', '1Y', '5Y'];
+            
+            Object.keys(stockData).forEach(symbol => {
+                chartData[symbol] = {};
+                
+                timeframes.forEach(tf => {
+                    chartData[symbol][tf] = generateCandlestickData(symbol, tf);
+                });
+            });
+        }
+
+        // Generate candlestick data for specific timeframe
+        function generateCandlestickData(symbol, timeframe) {
+            const data = [];
+            const stock = stockData[symbol];
+            let dataPoints = 24;
+            let interval = 60 * 60 * 1000; // 1 hour
+            
+            // Adjust data points and intervals based on timeframe
+            switch(timeframe) {
+                case '1D': dataPoints = 24; interval = 60 * 60 * 1000; break;
+                case '5D': dataPoints = 120; interval = 60 * 60 * 1000; break;
+                case '1M': dataPoints = 30; interval = 24 * 60 * 60 * 1000; break;
+                case '3M': dataPoints = 90; interval = 24 * 60 * 60 * 1000; break;
+                case '6M': dataPoints = 180; interval = 24 * 60 * 60 * 1000; break;
+                case '1Y': dataPoints = 365; interval = 24 * 60 * 60 * 1000; break;
+                case '5Y': dataPoints = 1825; interval = 24 * 60 * 60 * 1000; break;
+            }
+            
+            let currentPrice = stock.previousClose;
+            const now = new Date();
+            
+            for (let i = dataPoints; i >= 0; i--) {
+                const timestamp = new Date(now.getTime() - (i * interval));
+                
+                // Create realistic price movement based on stock characteristics
+                let volatility = 0.015; // Base volatility
+                
+                // Adjust volatility based on stock and recent events
+                if (symbol === 'DZRA' && i < 5) {
+                    volatility = 0.08; // Big spike for DZRA in last few periods
+                } else if (symbol === 'VORZO' && i < 10) {
+                    volatility = 0.04; // Moderate increase following DZRA
+                } else if (symbol === 'OTECH') {
+                    volatility = 0.008; // More stable, slower growth
+                }
+                
+                // Generate OHLC data
+                const change = (Math.random() - 0.5) * volatility * currentPrice;
+                const open = currentPrice;
+                const close = Math.max(0.01, currentPrice + change);
+                
+                // High and low with realistic wicks
+                const wickRange = Math.random() * 0.01 * currentPrice;
+                const high = Math.max(open, close) + wickRange;
+                const low = Math.min(open, close) - wickRange;
+                
+                // Volume with realistic patterns
+                const baseVolume = parseInt(stock.avgVolume.replace(/[KM]/g, '')) * 1000;
+                if (stock.avgVolume.includes('K')) baseVolume = baseVolume;
+                if (stock.avgVolume.includes('M')) baseVolume = baseVolume * 1000;
+                
+                const volumeVariation = 0.3 + Math.random() * 1.4; // 30% to 170% of average
+                const volume = Math.floor(baseVolume * volumeVariation);
+                
+                data.push({
+                    timestamp,
+                    open: parseFloat(open.toFixed(2)),
+                    high: parseFloat(high.toFixed(2)),
+                    low: parseFloat(low.toFixed(2)),
+                    close: parseFloat(close.toFixed(2)),
+                    volume
+                });
+                
+                currentPrice = close;
+            }
+            
+            // Ensure the last data point matches current price
+            if (data.length > 0) {
+                data[data.length - 1].close = stock.currentPrice;
+            }
+            
+            return data;
+        }
+
+        // Render watchlist
+        function renderWatchlist() {
+            const watchlistContainer = document.getElementById('watchlist');
+            const mobileWatchlistContainer = document.getElementById('mobileWatchlist');
+            
+            const watchlistHTML = Object.keys(stockData).map(symbol => {
+                const stock = stockData[symbol];
+                const changeClass = stock.change >= 0 ? 'price-up' : 'price-down';
+                const changeSymbol = stock.change >= 0 ? '+' : '';
+                
+                return `
+                    <div class="stock-card p-4 cursor-pointer" onclick="selectStock('${symbol}')">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <div class="font-semibold text-lg">${stock.name}</div>
+                                <div class="text-sm text-gray-400">${stock.symbol} • ${stock.exchange}</div>
+                            </div>
+                            <div class="text-right">
+                                <div class="font-bold text-xl">$${stock.currentPrice.toFixed(2)}</div>
+                                <div class="text-sm ${changeClass}">
+                                    ${changeSymbol}$${Math.abs(stock.change).toFixed(2)} (${changeSymbol}${stock.changePercent.toFixed(1)}%)
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            if (watchlistContainer) watchlistContainer.innerHTML = watchlistHTML;
+            if (mobileWatchlistContainer) mobileWatchlistContainer.innerHTML = watchlistHTML;
+        }
+
+        // Render stock details
+        function renderStockDetails() {
+            const stock = stockData[currentStock];
+            const detailsContainer = document.getElementById('stockDetails');
+            
+            if (!detailsContainer) return;
+            
+            const detailsHTML = `
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="bg-gray-900 p-3 rounded-lg">
+                        <div class="text-xs text-gray-400">Market Cap</div>
+                        <div class="font-semibold">$${stock.marketCap}</div>
+                    </div>
+                    <div class="bg-gray-900 p-3 rounded-lg">
+                        <div class="text-xs text-gray-400">P/E Ratio</div>
+                        <div class="font-semibold">${stock.peRatio}</div>
+                    </div>
+                    <div class="bg-gray-900 p-3 rounded-lg">
+                        <div class="text-xs text-gray-400">Volume</div>
+                        <div class="font-semibold">${stock.volume}</div>
+                    </div>
+                    <div class="bg-gray-900 p-3 rounded-lg">
+                        <div class="text-xs text-gray-400">Avg Volume</div>
+                        <div class="font-semibold">${stock.avgVolume}</div>
+                    </div>
+                    <div class="bg-gray-900 p-3 rounded-lg">
+                        <div class="text-xs text-gray-400">52W High</div>
+                        <div class="font-semibold">$${stock.high52.toFixed(2)}</div>
+                    </div>
+                    <div class="bg-gray-900 p-3 rounded-lg">
+                        <div class="text-xs text-gray-400">52W Low</div>
+                        <div class="font-semibold">$${stock.low52.toFixed(2)}</div>
+                    </div>
+                    <div class="bg-gray-900 p-3 rounded-lg">
+                        <div class="text-xs text-gray-400">Dividend Yield</div>
+                        <div class="font-semibold">${stock.dividendYield}</div>
+                    </div>
+                    <div class="bg-gray-900 p-3 rounded-lg">
+                        <div class="text-xs text-gray-400">EPS</div>
+                        <div class="font-semibold">$${stock.eps}</div>
+                    </div>
+                    <div class="bg-gray-900 p-3 rounded-lg">
+                        <div class="text-xs text-gray-400">Beta</div>
+                        <div class="font-semibold">${stock.beta}</div>
+                    </div>
+                    <div class="bg-gray-900 p-3 rounded-lg">
+                        <div class="text-xs text-gray-400">Employees</div>
+                        <div class="font-semibold">${stock.employees}</div>
+                    </div>
+                </div>
+                <div class="mt-4 bg-gray-900 p-3 rounded-lg">
+                    <div class="text-xs text-gray-400">Next Earnings</div>
+                    <div class="font-semibold">${stock.earnings}</div>
+                </div>
+            `;
+            
+            detailsContainer.innerHTML = detailsHTML;
+        }
+
+        // Render news section
+        function renderNews() {
+            const newsContainer = document.getElementById('newsSection');
+            const mobileNewsContainer = document.getElementById('mobileNews');
+            
+            const newsHTML = newsData.map(news => {
+                const sentimentColor = news.sentiment === 'positive' ? 'text-green-400' : 
+                                     news.sentiment === 'negative' ? 'text-red-400' : 'text-gray-400';
+                
+                return `
+                    <div class="news-item p-4 cursor-pointer">
+                        <div class="flex items-start space-x-3">
+                            <div class="w-2 h-2 ${sentimentColor} rounded-full mt-2 flex-shrink-0"></div>
+                            <div class="flex-1">
+                                <h4 class="font-semibold text-sm leading-tight mb-2">${news.title}</h4>
+                                <p class="text-xs text-gray-400 leading-relaxed mb-2">${news.summary}</p>
+                                <div class="flex items-center justify-between text-xs text-gray-500">
+                                    <span>${news.source}</span>
+                                    <span>${news.time}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            if (newsContainer) newsContainer.innerHTML = newsHTML;
+            if (mobileNewsContainer) mobileNewsContainer.innerHTML = newsHTML;
+        }
+
+        // Select stock
+        function selectStock(symbol) {
+            currentStock = symbol;
+            updateStockHeader();
+            renderStockDetails();
+            renderChart();
+        }
+
+        // Update stock header
+        function updateStockHeader() {
+            const stock = stockData[currentStock];
+            const changeClass = stock.change >= 0 ? 'price-up' : 'price-down';
+            const changeSymbol = stock.change >= 0 ? '+' : '';
+            
+            const nameEl = document.getElementById('stockName');
+            const symbolEl = document.getElementById('stockSymbol');
+            const priceEl = document.getElementById('stockPrice');
+            const changeEl = document.getElementById('stockChange');
+            
+            if (nameEl) nameEl.textContent = stock.name;
+            if (symbolEl) symbolEl.textContent = `${stock.symbol} • ${stock.exchange}`;
+            if (priceEl) {
+                priceEl.textContent = `$${stock.currentPrice.toFixed(2)}`;
+                priceEl.className = `text-4xl font-bold ${changeClass}`;
+            }
+            if (changeEl) {
+                changeEl.textContent = `${changeSymbol}$${Math.abs(stock.change).toFixed(2)} (${changeSymbol}${stock.changePercent.toFixed(1)}%) Today`;
+                changeEl.className = `text-lg ${changeClass}`;
+            }
+        }
+
+        // Render chart
+        function renderChart() {
+            const svg = document.getElementById('mainChart');
+            const mobileSvg = document.getElementById('mobileChart');
+            
+            if (svg) renderChartOnSVG(svg);
+            if (mobileSvg) renderChartOnSVG(mobileSvg);
+        }
+
+        // Render chart on specific SVG element
+        function renderChartOnSVG(svg) {
+            const data = chartData[currentStock][currentTimeframe];
+            if (!data || data.length === 0) return;
+            
+            // Clear existing content
+            svg.innerHTML = '';
+            
+            const rect = svg.getBoundingClientRect();
+            const width = rect.width;
+            const height = rect.height;
+            const padding = 60;
+            
+            // Calculate price range
+            const prices = data.flatMap(d => [d.open, d.high, d.low, d.close]);
+            const minPrice = Math.min(...prices) * 0.995;
+            const maxPrice = Math.max(...prices) * 1.005;
+            const priceRange = maxPrice - minPrice;
+            
+            // Calculate scales
+            const xScale = (width - 2 * padding) / data.length;
+            const yScale = (height - 2 * padding) / priceRange;
+            
+            // Draw grid lines
+            const gridLines = 8;
+            for (let i = 0; i <= gridLines; i++) {
+                const y = padding + (i * (height - 2 * padding) / gridLines);
+                const price = maxPrice - (i * priceRange / gridLines);
+                
+                // Horizontal grid line
+                const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                line.setAttribute('x1', padding);
+                line.setAttribute('y1', y);
+                line.setAttribute('x2', width - padding);
+                line.setAttribute('y2', y);
+                line.setAttribute('stroke', '#2c2c2e');
+                line.setAttribute('stroke-width', '0.5');
+                svg.appendChild(line);
+                
+                // Price label
+                const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                label.setAttribute('x', width - padding + 5);
+                label.setAttribute('y', y + 4);
+                label.setAttribute('fill', '#8e8e93');
+                label.setAttribute('font-size', '11');
+                label.setAttribute('font-family', '-apple-system, BlinkMacSystemFont, SF Pro Display');
+                label.textContent = `$${price.toFixed(2)}`;
+                svg.appendChild(label);
+            }
+            
+            // Draw candlesticks
+            data.forEach((candle, index) => {
+                const x = padding + (index * xScale) + xScale / 2;
+                const openY = padding + (maxPrice - candle.open) * yScale;
+                const closeY = padding + (maxPrice - candle.close) * yScale;
+                const highY = padding + (maxPrice - candle.high) * yScale;
+                const lowY = padding + (maxPrice - candle.low) * yScale;
+                
+                const isGreen = candle.close > candle.open;
+                const isSpike = currentStock === 'DZRA' && index >= data.length - 5;
+                
+                let color = isGreen ? '#30d158' : '#ff453a';
+                if (isSpike) color = '#007aff';
+                
+                // Draw wick (shadow)
+                const wick = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                wick.setAttribute('x1', x);
+                wick.setAttribute('y1', highY);
+                wick.setAttribute('x2', x);
+                wick.setAttribute('y2', lowY);
+                wick.setAttribute('stroke', color);
+                wick.setAttribute('stroke-width', '1');
+                svg.appendChild(wick);
+                
+                // Draw body
+                const bodyHeight = Math.abs(closeY - openY);
+                const bodyY = Math.min(openY, closeY);
+                const bodyWidth = Math.max(xScale * 0.6, 2);
+                
+                const body = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                body.setAttribute('x', x - bodyWidth / 2);
+                body.setAttribute('y', bodyY);
+                body.setAttribute('width', bodyWidth);
+                body.setAttribute('height', Math.max(bodyHeight, 1));
+                body.setAttribute('fill', isGreen ? color : 'transparent');
+                body.setAttribute('stroke', color);
+                body.setAttribute('stroke-width', '1');
+                
+                // Add hover events
+                body.addEventListener('mouseenter', (e) => showTooltip(e, candle));
+                body.addEventListener('mouseleave', hideTooltip);
+                body.style.cursor = 'crosshair';
+                
+                svg.appendChild(body);
+            });
+            
+            // Draw volume bars at bottom
+            const volumeHeight = 40;
+            const volumeY = height - padding + 10;
+            const maxVolume = Math.max(...data.map(d => d.volume));
+            
+            data.forEach((candle, index) => {
+                const x = padding + (index * xScale) + xScale / 2;
+                const barHeight = (candle.volume / maxVolume) * volumeHeight;
+                const y = volumeY + volumeHeight - barHeight;
+                
+                const bar = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                bar.setAttribute('x', x - xScale * 0.3);
+                bar.setAttribute('y', y);
+                bar.setAttribute('width', Math.max(xScale * 0.6, 1));
+                bar.setAttribute('height', barHeight);
+                bar.setAttribute('fill', candle.close > candle.open ? '#30d158' : '#ff453a');
+                bar.setAttribute('opacity', '0.5');
+                bar.classList.add('volume-bar');
+                svg.appendChild(bar);
+            });
+        }
+
+        // Show tooltip
+        function showTooltip(event, candle) {
+            const tooltip = document.getElementById('chartTooltip');
+            if (!tooltip) return;
+            
+            const rect = event.target.getBoundingClientRect();
+            
+            document.getElementById('tooltipDate').textContent = candle.timestamp.toLocaleDateString('en-US', {
+                weekday: 'short',
+                month: 'short',
+                day: 'numeric',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+            
+            document.getElementById('tooltipOpen').textContent = `$${candle.open.toFixed(2)}`;
+            document.getElementById('tooltipHigh').textContent = `$${candle.high.toFixed(2)}`;
+            document.getElementById('tooltipLow').textContent = `$${candle.low.toFixed(2)}`;
+            document.getElementById('tooltipClose').textContent = `$${candle.close.toFixed(2)}`;
+            document.getElementById('tooltipVolume').textContent = candle.volume.toLocaleString();
+            
+            tooltip.style.left = `${rect.right + 15}px`;
+            tooltip.style.top = `${rect.top - 50}px`;
+            tooltip.classList.remove('hidden');
+        }
+
+        // Hide tooltip
+        function hideTooltip() {
+            const tooltip = document.getElementById('chartTooltip');
+            if (tooltip) tooltip.classList.add('hidden');
+        }
+
+        // Setup event listeners
+        function setupEventListeners() {
+            // Timeframe buttons
+            document.querySelectorAll('.timeframe-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    document.querySelectorAll('.timeframe-btn').forEach(b => {
+                        b.classList.remove('active');
+                    });
+                    
+                    e.target.classList.add('active');
+                    currentTimeframe = e.target.dataset.period;
+                    renderChart();
+                });
+            });
+        }
+
+        // Start real-time synchronization
+        function startRealTimeSync() {
+            console.log('🔄 Starting real-time sync...');
+            
+            // Listen for Firebase updates
+            database.ref('stockPrices').on('value', (snapshot) => {
+                const data = snapshot.val();
+                if (data) {
+                    let hasUpdates = false;
+                    
+                    Object.keys(data).forEach(symbol => {
+                        if (stockData[symbol] && data[symbol].timestamp > lastSyncTime) {
+                            const oldPrice = stockData[symbol].currentPrice;
+                            stockData[symbol].currentPrice = data[symbol].price;
+                            stockData[symbol].change = data[symbol].price - stockData[symbol].previousClose;
+                            stockData[symbol].changePercent = (stockData[symbol].change / stockData[symbol].previousClose) * 100;
+                            
+                            hasUpdates = true;
+                            console.log(`📈 ${symbol} updated: $${oldPrice.toFixed(2)} → $${data[symbol].price.toFixed(2)}`);
+                        }
+                    });
+                    
+                    if (hasUpdates) {
+                        lastSyncTime = Date.now();
+                        updateUI();
+                        showSyncIndicator();
+                    }
+                }
+            });
+            
+            // Simulate small price movements every 10 seconds
+            setInterval(() => {
+                simulatePriceMovements();
+            }, 10000);
+            
+            // Update last update time
+            setInterval(() => {
+                const now = new Date();
+                const timeAgo = Math.floor((now.getTime() - lastSyncTime) / 1000);
+                const lastUpdateEl = document.getElementById('lastUpdate');
+                if (lastUpdateEl) {
+                    if (timeAgo < 60) {
+                        lastUpdateEl.textContent = `Last updated: ${timeAgo}s ago`;
+                    } else {
+                        lastUpdateEl.textContent = `Last updated: ${Math.floor(timeAgo / 60)}m ago`;
+                    }
+                }
+            }, 1000);
+        }
+
+        // Simulate realistic price movements
+        function simulatePriceMovements() {
+            Object.keys(stockData).forEach(symbol => {
+                const stock = stockData[symbol];
+                
+                // Different volatility for each stock
+                let volatility = 0.001; // Base 0.1%
+                if (symbol === 'DZRA') volatility = 0.003; // More volatile after spike
+                if (symbol === 'VORZO') volatility = 0.002; // Moderate volatility
+                if (symbol === 'OTECH') volatility = 0.0008; // Most stable
+                
+                const change = (Math.random() - 0.5) * volatility * stock.currentPrice;
+                const newPrice = Math.max(0.01, stock.currentPrice + change);
+                
+                // Update Firebase
+                database.ref(`stockPrices/${symbol}`).set({
+                    price: parseFloat(newPrice.toFixed(2)),
+                    timestamp: Date.now()
+                });
+            });
+        }
+
+        // Update UI after price changes
+        function updateUI() {
+            renderWatchlist();
+            updateStockHeader();
+            renderStockDetails();
+            generateChartData();
+            renderChart();
+        }
+
+        // Show sync indicator
+        function showSyncIndicator() {
+            const indicator = document.getElementById('syncIndicator');
+            if (indicator) {
+                indicator.classList.add('show');
+                setTimeout(() => {
+                    indicator.classList.remove('show');
+                }, 2000);
+            }
+        }
+
+        // Admin functions
+        function showAdminLogin() {
+            document.getElementById('adminModal').classList.remove('hidden');
+            document.getElementById('adminModal').classList.add('flex');
+        }
+
+        function hideAdminLogin() {
+            document.getElementById('adminModal').classList.add('hidden');
+            document.getElementById('adminModal').classList.remove('flex');
+            document.getElementById('adminCode').value = '';
+        }
+
+        function verifyAdmin() {
+            const code = document.getElementById('adminCode').value;
+            if (code === '7973804008') {
+                isAdmin = true;
+                hideAdminLogin();
+                showAdminPanel();
+            } else {
+                alert('❌ Invalid access code');
+            }
+        }
+
+        function showAdminPanel() {
+            document.getElementById('adminPanel').classList.remove('hidden');
+            // Pre-fill current prices
+            document.getElementById('dzraPrice').value = stockData.DZRA.currentPrice.toFixed(2);
+            document.getElementById('vorzoPrice').value = stockData.VORZO.currentPrice.toFixed(2);
+            document.getElementById('otechPrice').value = stockData.OTECH.currentPrice.toFixed(2);
+        }
+
+        function hideAdminPanel() {
+            document.getElementById('adminPanel').classList.add('hidden');
+        }
+
+        function updatePrice(symbol) {
+            if (!isAdmin) {
+                alert('❌ Admin access required');
+                return;
+            }
+            
+            const inputId = symbol.toLowerCase() + 'Price';
+            const newPrice = parseFloat(document.getElementById(inputId).value);
+            
+            if (newPrice && newPrice > 0) {
+                // Update Firebase - this will trigger global sync
+                database.ref(`stockPrices/${symbol}`).set({
+                    price: newPrice,
+                    timestamp: Date.now()
+                });
+                
+                console.log(`🔧 Admin updated ${symbol} to $${newPrice.toFixed(2)}`);
+                alert(`✅ ${symbol} price updated to $${newPrice.toFixed(2)}\n🌍 Syncing globally...`);
+            } else {
+                alert('❌ Please enter a valid price');
+            }
+        }
+
+        // Initialize app when page loads
+        window.addEventListener('load', () => {
+            console.log('🎯 Page loaded, initializing...');
+            init();
+        });
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            setTimeout(renderChart, 100);
+        });
+
+        // Initialize stock selection
+        updateStockHeader();
+    </script>
+<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'969e3310877659ea',t:'MTc1NDMxMjAyNi4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>
